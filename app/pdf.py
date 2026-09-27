@@ -34,6 +34,32 @@ def _hex(c: str) -> colors.Color:
         return colors.HexColor("#1e6fd9")
 
 
+def _lum(c: colors.Color) -> float:
+    def ch(v):
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    return 0.2126 * ch(c.red) + 0.7152 * ch(c.green) + 0.0722 * ch(c.blue)
+
+
+def _on_white(c: colors.Color) -> colors.Color:
+    """Für Linien/Balken auf weißem Papier: sehr helle Teamfarben durch Grau ersetzen."""
+    return colors.HexColor("#9ca3af") if _lum(c) > 0.75 else c
+
+
+def _series_line(d: Drawing, pts, color: colors.Color, dashed: bool, width: float = 1.8):
+    dash = [4, 2.5] if dashed else None
+    if _lum(color) > 0.6:
+        # Helle Farbe (z. B. weiß) mit dunklem Rand, damit sie auf weißem Papier sichtbar bleibt
+        # durchgezogener dunkler Rand, darüber die (ggf. gestrichelte) helle Linie
+        d.add(PolyLine(pts, strokeColor=colors.HexColor("#111827"), strokeWidth=width + 1.8))
+    d.add(PolyLine(pts, strokeColor=color, strokeWidth=width, strokeDashArray=dash))
+
+
+def _legend_item(color: colors.Color, dashed: bool) -> Drawing:
+    d = Drawing(12 * mm, 3 * mm)
+    _series_line(d, [0, 1.5 * mm, 12 * mm, 1.5 * mm], color, dashed)
+    return d
+
+
 def _p(text, style=BODY):
     return Paragraph(escape(str(text)), style)
 
@@ -87,7 +113,7 @@ def _chart(rep: dict, width: float, height: float) -> Drawing:
         for p in rep["progression"]:
             pts += [x(p["game_ms"]), y(prev), x(p["game_ms"]), y(p[side])]
             prev = p[side]
-        d.add(PolyLine(pts, strokeColor=color, strokeWidth=1.8))
+        _series_line(d, pts, color, dashed=(side == "away"))
     return d
 
 
@@ -134,6 +160,7 @@ def render_pdf(rep: dict) -> bytes:
     story.append(Spacer(1, 6 * mm))
 
     hc, ac = _hex(g["home_color"]), _hex(g["away_color"])
+    hc_line, ac_line = _on_white(hc), _on_white(ac)
     ht = rep["cumulative"][0] if rep["cumulative"] else {"home": 0, "away": 0}
     logos = rep.get("logos") or {}
     home_logo = _logo(logos.get("home"), W * 0.3, 24 * mm)
@@ -150,8 +177,8 @@ def render_pdf(rep: dict) -> bytes:
             [
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("LINEABOVE", (0, 0), (0, 0), 4, hc),
-                ("LINEABOVE", (2, 0), (2, 0), 4, ac),
+                ("LINEABOVE", (0, 0), (0, 0), 4, hc_line),
+                ("LINEABOVE", (2, 0), (2, 0), 4, ac_line),
                 ("TOPPADDING", (0, 0), (-1, 0), 8),
             ]
         )
@@ -185,11 +212,11 @@ def render_pdf(rep: dict) -> bytes:
 
     # Verlauf
     legend = Table(
-        [["", g["home_name"], "", g["away_name"]]],
-        colWidths=[6 * mm, W * 0.4, 6 * mm, W * 0.4],
+        [[_legend_item(hc, False), g["home_name"], _legend_item(ac, True), g["away_name"]]],
+        colWidths=[14 * mm, W * 0.4, 14 * mm, W * 0.4],
     )
     legend.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, 0), hc), ("BACKGROUND", (2, 0), (2, 0), ac),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5), ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
     ]))
     story.append(KeepTogether([Paragraph("Spielverlauf", H2), _chart(rep, W, 62 * mm), Spacer(1, 2 * mm), legend]))
@@ -225,7 +252,7 @@ def render_pdf(rep: dict) -> bytes:
     )
     both.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("LINEBELOW", (0, 0), (0, 0), 2, hc), ("LINEBELOW", (1, 0), (1, 0), 2, ac),
+        ("LINEBELOW", (0, 0), (0, 0), 2, hc_line), ("LINEBELOW", (1, 0), (1, 0), 2, ac_line),
         ("RIGHTPADDING", (0, 0), (0, -1), 6), ("LEFTPADDING", (1, 0), (1, -1), 6),
     ]))
     story.append(KeepTogether([Paragraph("Torschützen", H2), both]))
@@ -237,7 +264,7 @@ def render_pdf(rep: dict) -> bytes:
         name = g["home_name"] if x["side"] == "home" else g["away_name"]
         shooter = " ".join(v for v in (f"#{x['player_number']}" if x["player_number"] else "", x["player_name"] or "") if v)
         rows.append([i, x["clock"], x["half"], _p(name), f"{x['home']}:{x['away']}", _p(shooter or "–"), "7m" if x["seven_m"] else ""])
-        style.append(("LINEBEFORE", (3, i), (3, i), 3, hc if x["side"] == "home" else ac))
+        style.append(("LINEBEFORE", (3, i), (3, i), 3, hc_line if x["side"] == "home" else ac_line))
     if len(rows) == 1:
         rows.append(["", "", "", _p("Keine Tore erfasst"), "", "", ""])
     else:

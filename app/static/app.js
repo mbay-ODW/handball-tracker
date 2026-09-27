@@ -51,7 +51,9 @@ async function api(path, opts = {}) {
       const j = await res.json();
       if (j.detail) msg = typeof j.detail === "string" ? j.detail : j.detail.map((d) => d.msg).join(", ");
     } catch (_) {}
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
   const data = await res.json();
   if (data && data.server_time) {
@@ -78,6 +80,18 @@ function undoSeconds() {
 function setUndoSeconds(v) {
   try { localStorage.setItem(UNDO_KEY, String(v)); } catch (_) {}
 }
+
+// Relative Helligkeit (0 = schwarz, 1 = weiß) für Kontrast-Entscheidungen
+function lum(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return 0.3;
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const c = parseInt(m[1].substr(i, 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+const ink = (hex) => (lum(hex) > 0.45 ? "#111827" : "#ffffff");
 
 const teamLogoUrl = (t) => (t.logo_v ? `/api/teams/${t.id}/logo?v=${t.logo_v}` : null);
 const gameLogoUrl = (g, side) => (g[`${side}_logo_v`] ? `/api/games/${g.id}/logo/${side}?v=${g[`${side}_logo_v`]}` : null);
@@ -372,9 +386,19 @@ async function viewLive(id) {
       if (data.version >= (st.version || 0)) apply(data);
     };
     es.addEventListener("gone", () => { es.close(); location.hash = "#/"; });
-    es.onerror = () => { connected = false; renderConn(); };
+    es.onerror = () => {
+      connected = false;
+      renderConn();
+      // Nach einem Server-Neustart gibt der Browser den Stream ggf. endgültig auf – selbst neu verbinden.
+      if (es.readyState === EventSource.CLOSED && !closed) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => { if (!closed) { refresh(); connect(); } }, 3000);
+      }
+    };
     es.onopen = () => { connected = true; renderConn(); refresh(); };
   }
+  let closed = false;
+  let reconnectTimer = null;
   connect();
 
   // Bestätigungs-Banner nach einem Tor (liegt außerhalb von #view, übersteht Re-Renders)
@@ -399,6 +423,7 @@ async function viewLive(id) {
     const secs = undoSeconds();
     const until = Date.now() + secs * 1000;
     banner.style.setProperty("--team", color);
+    banner.style.setProperty("--team-ink", ink(color));
     banner.innerHTML = `
       <div class="gb-main">
         ${logo ? `<img src="${esc(logo)}" alt="">` : `<span class="gb-check">✓</span>`}
@@ -416,14 +441,33 @@ async function viewLive(id) {
     const undo = document.getElementById("gbUndo");
     if (undo) undo.onclick = async () => {
       undo.disabled = true;
-      try {
-        const r = await api(`/api/events/${ev.id}`, { method: "DELETE" });
-        if (pending === ev.id) pending = null;
-        hideBanner();
-        apply(r);
-        toast(`Tor ${name} zurückgenommen`);
-        if (navigator.vibrate) navigator.vibrate([40, 60, 40]);
-      } catch (e) { undo.disabled = false; toast(e.message, true); }
+      clearInterval(bannerTimer); // Banner bleibt stehen, bis die Rücknahme bestätigt ist
+      undo.innerHTML = "… wird zurückgenommen";
+      // Bis zu 5 Versuche (z. B. kurzer Netz- oder Server-Aussetzer). 404 = bereits gelöscht → Erfolg.
+      let lastErr = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          const r = await api(`/api/events/${ev.id}`, { method: "DELETE" });
+          lastErr = null;
+          apply(r);
+          break;
+        } catch (e) {
+          if (e.status === 404) { lastErr = null; await refresh(); break; }
+          lastErr = e;
+          await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+        }
+      }
+      if (lastErr) {
+        undo.disabled = false;
+        undo.innerHTML = "↶ Nochmal versuchen";
+        toast("Zurücknehmen fehlgeschlagen: " + lastErr.message + " – Tor ist noch gezählt", true);
+        return;
+      }
+      if (pending === ev.id) pending = null;
+      hideBanner();
+      render();
+      toast(`Tor ${name} zurückgenommen`);
+      if (navigator.vibrate) navigator.vibrate([40, 60, 40]);
     };
     bannerTimer = setInterval(() => {
       const left = Math.ceil((until - Date.now()) / 1000);
@@ -437,6 +481,8 @@ async function viewLive(id) {
   const tick = setInterval(renderClock, 200);
   const sync = setInterval(refresh, 30000);
   cleanup = () => {
+    closed = true;
+    clearTimeout(reconnectTimer);
     clearInterval(tick); clearInterval(sync);
     if (es) es.close();
     document.removeEventListener("visibilitychange", onVis);
@@ -517,7 +563,7 @@ async function viewLive(id) {
             </div>
             <div class="goal-buttons">
               ${["home", "away"].map((s) => `
-                <button class="goal-btn" data-goal="${s}" style="background:${esc(teamColor(s))}" ${finished ? "disabled" : ""}>
+                <button class="goal-btn${lum(teamColor(s)) > 0.45 ? " light" : ""}" data-goal="${s}" style="background:${esc(teamColor(s))};color:${ink(teamColor(s))}" ${finished ? "disabled" : ""}>
                   TOR
                   <span class="sub">${esc(teamName(s))}</span>
                 </button>`).join("")}
@@ -747,9 +793,17 @@ function chartSvg(rep) {
     let prev = 0;
     const pts = [];
     for (const p of rep.progression) { pts.push(`${x(p.game_ms)},${y(prev)}`, `${x(p.game_ms)},${y(p[side])}`); prev = p[side]; }
-    s += `<polyline points="${pts.join(" ")}" fill="none" stroke="${esc(color)}" stroke-width="3" stroke-linejoin="round"/>`;
+    const dash = side === "away" ? ` stroke-dasharray="10 6"` : "";
+    // Dunkle Farben auf dunklem Hintergrund bekommen einen hellen Rand
+    if (lum(color) < 0.12) s += `<polyline points="${pts.join(" ")}" fill="none" stroke="#e2e8f0" stroke-width="6" stroke-linejoin="round"${dash}/>`;
+    s += `<polyline points="${pts.join(" ")}" fill="none" stroke="${esc(color)}" stroke-width="3.5" stroke-linejoin="round"${dash}/>`;
   }
   return s + "</svg>";
+}
+
+function legendLine(color, dashed) {
+  const halo = lum(color) < 0.12 ? `<line x1="2" y1="7" x2="34" y2="7" stroke="#e2e8f0" stroke-width="6"${dashed ? ` stroke-dasharray="10 6"` : ""}/>` : "";
+  return `<svg width="36" height="14" aria-hidden="true">${halo}<line x1="2" y1="7" x2="34" y2="7" stroke="${esc(color)}" stroke-width="3.5"${dashed ? ` stroke-dasharray="10 6"` : ""}/></svg>`;
 }
 
 async function viewReport(id) {
@@ -793,8 +847,8 @@ async function viewReport(id) {
     <h2>Spielverlauf</h2>
     ${chartSvg(rep)}
     <div class="row small" style="margin-top:6px">
-      <span class="swatch" style="height:10px;width:18px;background:${esc(g.home_color)}"></span>${esc(g.home_name)}
-      <span class="swatch" style="height:10px;width:18px;background:${esc(g.away_color)};margin-left:10px"></span>${esc(g.away_name)}
+      ${legendLine(g.home_color, false)} ${esc(g.home_name)}
+      <span style="width:12px"></span>${legendLine(g.away_color, true)} ${esc(g.away_name)}
     </div>
 
     <h2>Tore je ${rep.interval_minutes} Minuten</h2>
