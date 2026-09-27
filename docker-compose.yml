@@ -1,6 +1,6 @@
 services:
   handball:
-    image: handball-tracker:latest
+    image: ${IMAGE:-ghcr.io/mbay-odw/handball-tracker:latest}
     container_name: handball-tracker
     hostname: handball-tracker
     restart: unless-stopped
