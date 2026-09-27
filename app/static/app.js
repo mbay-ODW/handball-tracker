@@ -101,32 +101,40 @@ const HAPTIC_KEY = "handball.haptic";
 const pref = (k, def) => { try { const v = localStorage.getItem(k); return v === null ? def : v === "1"; } catch (_) { return def; } };
 const setPref = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch (_) {} };
 
-let hapticLabel = null;
+// iPhone/iPad (auch iPadOS, das sich als Mac ausgibt)
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+// iOS: Safari hat navigator.vibrate ggf. als wirkungslose Funktion. Stattdessen einen
+// <input type="checkbox" switch> per Label umschalten – das löst ab iOS 18 die Systemhaptik aus.
+// Muster wie in der Bibliothek "ios-haptics": pro Impuls frisches Label, klicken, wieder entfernen.
 function iosTick() {
-  if (!hapticLabel) {
-    hapticLabel = document.createElement("label");
-    hapticLabel.setAttribute("aria-hidden", "true");
-    hapticLabel.style.cssText = "position:fixed;left:-100px;top:0;width:1px;height:1px;overflow:hidden;opacity:0";
-    const sw = document.createElement("input");
-    sw.type = "checkbox";
-    sw.setAttribute("switch", "");
-    sw.tabIndex = -1;
-    hapticLabel.appendChild(sw);
-    document.body.appendChild(hapticLabel);
-  }
-  hapticLabel.click();
+  const label = document.createElement("label");
+  label.ariaHidden = "true";
+  label.style.display = "none";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.setAttribute("switch", "");
+  label.appendChild(input);
+  document.head.appendChild(label);
+  label.click();
+  document.head.removeChild(label);
 }
 
 // pattern: "tap" (Tor gebucht), "ok" (gespeichert/zurückgenommen), "error"
 function haptic(pattern = "tap") {
-  if (!pref(HAPTIC_KEY, true)) return;
-  if (navigator.vibrate) {
-    navigator.vibrate({ tap: 80, ok: [40, 60, 40], error: [200, 100, 200, 100, 200] }[pattern] || 80);
-    return;
+  if (!pref(HAPTIC_KEY, true)) return "aus";
+  if (IS_IOS) {
+    const n = { tap: 1, ok: 2, error: 3 }[pattern] || 1;
+    iosTick(); // erster Impuls synchron innerhalb der Nutzeraktion
+    for (let i = 1; i < n; i++) setTimeout(iosTick, i * 140);
+    return "iOS-Switch";
   }
-  const n = { tap: 1, ok: 2, error: 3 }[pattern] || 1;
-  iosTick(); // erster Impuls synchron innerhalb der Nutzeraktion
-  for (let i = 1; i < n; i++) setTimeout(iosTick, i * 140);
+  if (typeof navigator.vibrate === "function") {
+    navigator.vibrate({ tap: 80, ok: [40, 60, 40], error: [200, 100, 200, 100, 200] }[pattern] || 80);
+    return "vibrate";
+  }
+  return "nicht unterstützt";
 }
 
 let audioCtx = null;
@@ -148,7 +156,7 @@ function beep(pattern = "tap") {
     }
   } catch (_) {}
 }
-const feedback = (p) => { haptic(p); beep(p); };
+const feedback = (p) => { const how = haptic(p); beep(p); return how; };
 
 const teamLogoUrl = (t) => (t.logo_v ? `/api/teams/${t.id}/logo?v=${t.logo_v}` : null);
 const gameLogoUrl = (g, side) => (g[`${side}_logo_v`] ? `/api/games/${g.id}/logo/${side}?v=${g[`${side}_logo_v`]}` : null);
@@ -241,7 +249,10 @@ async function viewGames() {
     </div>`;
   document.getElementById("prefHaptic").onchange = (ev) => setPref(HAPTIC_KEY, ev.target.checked);
   document.getElementById("prefSound").onchange = (ev) => setPref(SOUND_KEY, ev.target.checked);
-  document.getElementById("testFeedback").onclick = () => feedback("tap");
+  document.getElementById("testFeedback").onclick = () => {
+    const how = feedback("tap");
+    toast(`Rückmeldung ausgelöst – Methode: ${how}`);
+  };
   document.getElementById("undoSec").onchange = (ev) => {
     const v = Math.max(0, Math.min(60, parseInt(ev.target.value, 10) || 0));
     ev.target.value = v;
