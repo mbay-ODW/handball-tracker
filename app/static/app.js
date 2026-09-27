@@ -122,8 +122,9 @@ function iosTick() {
 }
 
 // pattern: "tap" (Tor gebucht), "ok" (gespeichert/zurückgenommen), "error"
-function haptic(pattern = "tap") {
+function haptic(pattern = "tap", native = false) {
   if (!pref(HAPTIC_KEY, true)) return "aus";
+  if (IS_IOS && native && pattern === "tap") return "iOS-Schalter (Fingertipp)";
   if (IS_IOS) {
     const n = { tap: 1, ok: 2, error: 3 }[pattern] || 1;
     iosTick(); // erster Impuls synchron innerhalb der Nutzeraktion
@@ -156,7 +157,23 @@ function beep(pattern = "tap") {
     }
   } catch (_) {}
 }
-const feedback = (p) => { const how = haptic(p); beep(p); return how; };
+const feedback = (p, native = false) => { const how = haptic(p, native); beep(p); return how; };
+
+// iOS spielt die Systemhaptik zuverlässig nur ab, wenn der FINGER selbst einen
+// <input type="checkbox" switch> umlegt. Darum stecken wir in Tipp-Flächen (als <label>)
+// einen unsichtbaren, aber gerenderten Schalter. Andere Plattformen: normaler Klick.
+const useNativeSwitch = () => IS_IOS && pref(HAPTIC_KEY, true);
+const hsw = (disabled = false) =>
+  useNativeSwitch() ? `<input type="checkbox" switch class="hsw" tabindex="-1" aria-hidden="true"${disabled ? " disabled" : ""}>` : "";
+function bindTap(el, fn) {
+  const sw = el.querySelector("input.hsw");
+  if (sw) {
+    el.onclick = null;
+    sw.onchange = () => fn(true);
+  } else {
+    el.onclick = () => fn(false);
+  }
+}
 
 const teamLogoUrl = (t) => (t.logo_v ? `/api/teams/${t.id}/logo?v=${t.logo_v}` : null);
 const gameLogoUrl = (g, side) => (g[`${side}_logo_v`] ? `/api/games/${g.id}/logo/${side}?v=${g[`${side}_logo_v`]}` : null);
@@ -245,14 +262,15 @@ async function viewGames() {
         <span class="muted small">iPhone: kurzes Antippen spürbar (ab iOS 18, Safari; „Systemhaptik“ in den iOS-Einstellungen muss an sein).</span></label>
       <label class="toggle"><input type="checkbox" id="prefSound" ${pref(SOUND_KEY, false) ? "checked" : ""}> Piepton beim Tor
         <span class="muted small">Nicht hörbar, wenn das iPhone auf lautlos steht.</span></label>
-      <button class="btn" id="testFeedback">Rückmeldung testen</button>
+      <label class="btn" id="testFeedback" role="button">${hsw()}Rückmeldung testen</label>
     </div>`;
   document.getElementById("prefHaptic").onchange = (ev) => setPref(HAPTIC_KEY, ev.target.checked);
   document.getElementById("prefSound").onchange = (ev) => setPref(SOUND_KEY, ev.target.checked);
-  document.getElementById("testFeedback").onclick = () => {
-    const how = feedback("tap");
+  bindTap(document.getElementById("testFeedback"), (native) => {
+    const how = feedback("tap", native);
     toast(`Rückmeldung ausgelöst – Methode: ${how}`);
-  };
+  });
+  document.getElementById("prefHaptic").addEventListener("change", () => viewGames());
   document.getElementById("undoSec").onchange = (ev) => {
     const v = Math.max(0, Math.min(60, parseInt(ev.target.value, 10) || 0));
     ev.target.value = v;
@@ -509,7 +527,7 @@ async function viewLive(id) {
           <div class="gb-title">TOR ${esc(name)}</div>
           <div class="gb-sub">${fmtClock(ev.game_ms)} · Stand <b>${res.score.home}:${res.score.away}</b></div>
         </div>
-        ${secs > 0 ? `<button class="gb-undo" id="gbUndo">↶ Rückgängig <span id="gbCount">${secs}</span></button>` : ""}
+        ${secs > 0 ? `<label role="button" class="gb-undo" id="gbUndo">${hsw()}↶ Rückgängig <span id="gbCount">${secs}</span></label>` : ""}
       </div>
       <div class="gb-bar"><div class="gb-fill" style="animation-duration:${Math.max(secs, 2)}s"></div></div>`;
     banner.hidden = false;
@@ -517,8 +535,11 @@ async function viewLive(id) {
     banner.classList.add("show");
     clearInterval(bannerTimer);
     const undo = document.getElementById("gbUndo");
-    if (undo) undo.onclick = async () => {
-      undo.disabled = true;
+    let undoBusy = false;
+    const doUndo = async (native) => {
+      if (undoBusy) return;
+      undoBusy = true;
+      if (native) feedback("tap", true);
       clearInterval(bannerTimer); // Banner bleibt stehen, bis die Rücknahme bestätigt ist
       undo.innerHTML = "… wird zurückgenommen";
       // Bis zu 5 Versuche (z. B. kurzer Netz- oder Server-Aussetzer). 404 = bereits gelöscht → Erfolg.
@@ -536,8 +557,9 @@ async function viewLive(id) {
         }
       }
       if (lastErr) {
-        undo.disabled = false;
-        undo.innerHTML = "↶ Nochmal versuchen";
+        undoBusy = false;
+        undo.innerHTML = hsw() + "↶ Nochmal versuchen";
+        bindTap(undo, doUndo);
         feedback("error");
         toast("Zurücknehmen fehlgeschlagen: " + lastErr.message + " – Tor ist noch gezählt", true);
         return;
@@ -548,6 +570,7 @@ async function viewLive(id) {
       toast(`Tor ${name} zurückgenommen`);
       feedback("ok");
     };
+    if (undo) bindTap(undo, doUndo);
     bannerTimer = setInterval(() => {
       const left = Math.ceil((until - Date.now()) / 1000);
       const c = document.getElementById("gbCount");
@@ -642,10 +665,10 @@ async function viewLive(id) {
             </div>
             <div class="goal-buttons">
               ${["home", "away"].map((s) => `
-                <button class="goal-btn${lum(teamColor(s)) > 0.45 ? " light" : ""}" data-goal="${s}" style="background:${esc(teamColor(s))};color:${ink(teamColor(s))}" ${finished ? "disabled" : ""}>
+                <label role="button" class="goal-btn${lum(teamColor(s)) > 0.45 ? " light" : ""}${finished ? " disabled" : ""}" data-goal="${s}" style="background:${esc(teamColor(s))};color:${ink(teamColor(s))}">${hsw(finished)}
                   TOR
                   <span class="sub">${esc(teamName(s))}</span>
-                </button>`).join("")}
+                </label>`).join("")}
             </div>
             <div class="controls">
               <button class="btn start-btn ${startClass}" id="startBtn" data-action="${startAction}">${startLabel}</button>
@@ -701,14 +724,15 @@ async function viewLive(id) {
 
   function bind() {
     $view.querySelectorAll("[data-goal]").forEach((b) => {
-      b.onclick = async () => {
+      if (b.classList.contains("disabled")) return;
+      bindTap(b, async (native) => {
         const side = b.dataset.goal;
         const now = Date.now();
         if (now - lastTap[side] < 700) return; // Doppeltipp-Schutz
         lastTap[side] = now;
         const t = clockMs(st).total;
         b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash");
-        feedback("tap");
+        feedback("tap", native);
         try {
           const res = await api(`/api/games/${id}/goal`, { method: "POST", body: { side, game_ms: t } });
           pending = res.created_event_id;
@@ -716,7 +740,7 @@ async function viewLive(id) {
           const ev = res.events.find((e) => e.id === res.created_event_id);
           if (ev) showGoalBanner(ev, res);
         } catch (e) { feedback("error"); toast("Tor NICHT gespeichert: " + e.message, true); }
-      };
+      });
     });
     const sb = document.getElementById("startBtn");
     sb.onclick = () => {
