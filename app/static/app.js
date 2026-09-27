@@ -66,6 +66,44 @@ async function api(path, opts = {}) {
 
 const serverNow = () => Date.now() + serverOffset;
 
+// Geräte-Einstellung: wie lange ein Tor nach dem Buchen per Knopfdruck zurückgenommen werden kann.
+const UNDO_KEY = "handball.undoSeconds";
+function undoSeconds() {
+  try {
+    const v = parseInt(localStorage.getItem(UNDO_KEY), 10);
+    if (v >= 0 && v <= 60) return v;
+  } catch (_) {}
+  return 10;
+}
+function setUndoSeconds(v) {
+  try { localStorage.setItem(UNDO_KEY, String(v)); } catch (_) {}
+}
+
+const teamLogoUrl = (t) => (t.logo_v ? `/api/teams/${t.id}/logo?v=${t.logo_v}` : null);
+const gameLogoUrl = (g, side) => (g[`${side}_logo_v`] ? `/api/games/${g.id}/logo/${side}?v=${g[`${side}_logo_v`]}` : null);
+const teamBadge = (url, color, cls = "swatch") =>
+  url ? `<img class="logo-thumb" src="${esc(url)}" alt="">` : `<span class="${cls}" style="background:${esc(color)}"></span>`;
+
+// Bild im Browser auf max. 400 px verkleinern und als PNG-Data-URL liefern.
+function resizeImage(file, max = 400) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.naturalWidth || max, img.naturalHeight || max));
+      const w = Math.max(1, Math.round((img.naturalWidth || max) * scale));
+      const h = Math.max(1, Math.round((img.naturalHeight || max) * scale));
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL("image/png"));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Bild konnte nicht gelesen werden")); };
+    img.src = url;
+  });
+}
+
 function setNav() {
   const h = location.hash || "#/";
   document.querySelectorAll(".topbar nav a").forEach((a) => {
@@ -105,7 +143,9 @@ async function viewGames() {
     <div class="list">
       ${games.length ? games.map((g) => `
         <a class="list-item" href="${g.status === "finished" ? "#/report/" : "#/game/"}${g.id}">
-          <span class="swatch" style="background:linear-gradient(${esc(g.home_color)} 50%, ${esc(g.away_color)} 50%)"></span>
+          ${gameLogoUrl(g, "home") || gameLogoUrl(g, "away")
+            ? `<span class="logo-pair">${teamBadge(gameLogoUrl(g, "home"), g.home_color)}${teamBadge(gameLogoUrl(g, "away"), g.away_color)}</span>`
+            : `<span class="swatch" style="background:linear-gradient(${esc(g.home_color)} 50%, ${esc(g.away_color)} 50%)"></span>`}
           <div style="flex:1;min-width:0">
             <div><b>${esc(g.home_name)}</b> – <b>${esc(g.away_name)}</b></div>
             <div class="muted small">${esc([g.competition, fmtDate(g.game_date), g.venue].filter(Boolean).join(" · ") || "—")}</div>
@@ -113,7 +153,20 @@ async function viewGames() {
           <span class="score-small">${g.score.home}:${g.score.away}</span>
           <span class="badge ${g.status}">${statusLabel[g.status]}</span>
         </a>`).join("") : `<div class="empty">Noch keine Spiele. Lege zuerst die Mannschaften an und starte dann ein neues Spiel.</div>`}
+    </div>
+    <h2>Einstellungen <span class="muted small">(auf diesem Gerät)</span></h2>
+    <div class="card row">
+      <label style="flex:1;min-width:220px">Tor zurücknehmen möglich für (Sekunden)
+        <input id="undoSec" type="number" min="0" max="60" inputmode="numeric" value="${undoSeconds()}">
+      </label>
+      <span class="muted small" style="flex:2;min-width:200px">Nach jedem Tor erscheint eine Bestätigung mit „Rückgängig“-Knopf. 0 = nur Bestätigung ohne Rückgängig.</span>
     </div>`;
+  document.getElementById("undoSec").onchange = (ev) => {
+    const v = Math.max(0, Math.min(60, parseInt(ev.target.value, 10) || 0));
+    ev.target.value = v;
+    setUndoSeconds(v);
+    toast(`Rückgängig-Fenster: ${v} s`);
+  };
 }
 
 // ------------------------------------------------------------ Mannschaften
@@ -127,7 +180,7 @@ async function viewTeams() {
     <div class="list">
       ${teams.length ? teams.map((t) => `
         <a class="list-item" href="#/teams/${t.id}">
-          <span class="swatch" style="background:${esc(t.color)}"></span>
+          ${teamBadge(teamLogoUrl(t), t.color)}
           <div style="flex:1"><b>${esc(t.name)}</b> ${t.short ? `<span class="muted">(${esc(t.short)})</span>` : ""}</div>
           <span class="badge">${t.player_count} Spieler</span>
         </a>`).join("") : `<div class="empty">Noch keine Mannschaften angelegt.</div>`}
@@ -164,6 +217,17 @@ async function viewTeam(id) {
       </div>
       <div class="row"><button class="btn primary">Speichern</button><span class="spacer"></span><button type="button" class="btn danger" id="del">Löschen</button></div>
     </form>
+    <h2>Logo <span class="muted small">(erscheint in Live-Ansicht und Spielbericht/PDF)</span></h2>
+    <div class="card row">
+      ${teamLogoUrl(t) ? `<img class="logo-preview" src="${esc(teamLogoUrl(t))}" alt="Logo">` : `<div class="logo-preview empty-logo">kein Logo</div>`}
+      <div style="display:grid;gap:8px;flex:1;min-width:180px">
+        <label class="btn primary" style="cursor:pointer">${t.logo_v ? "Logo ersetzen" : "Logo hochladen"}
+          <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>
+        </label>
+        ${t.logo_v ? `<button class="btn danger" id="logoDel">Logo entfernen</button>` : ""}
+        <span class="muted small">PNG, JPG, WebP oder SVG – wird automatisch verkleinert.</span>
+      </div>
+    </div>
     <h2>Kader <span class="muted small">(optional – für Torschützen im Bericht)</span></h2>
     <form class="row card" id="fp" style="margin-bottom:10px">
       <input name="number" placeholder="Nr." maxlength="4" inputmode="numeric" style="width:80px;flex:none">
@@ -191,6 +255,22 @@ async function viewTeam(id) {
     if (!confirm(`Mannschaft „${t.name}“ wirklich löschen? Bereits erfasste Spiele bleiben erhalten.`)) return;
     await api(`/api/teams/${id}`, { method: "DELETE" });
     location.hash = "#/teams";
+  };
+  document.getElementById("logoFile").onchange = async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    try {
+      const data_url = await resizeImage(file);
+      await api(`/api/teams/${id}/logo`, { method: "PUT", body: { data_url } });
+      toast("Logo gespeichert");
+      viewTeam(id);
+    } catch (e) { toast(e.message, true); }
+  };
+  const ld = document.getElementById("logoDel");
+  if (ld) ld.onclick = async () => {
+    if (!confirm("Logo entfernen?")) return;
+    await api(`/api/teams/${id}/logo`, { method: "DELETE" });
+    viewTeam(id);
   };
   const fp = document.getElementById("fp");
   fp.onsubmit = async (ev) => {
@@ -297,6 +377,63 @@ async function viewLive(id) {
   }
   connect();
 
+  // Bestätigungs-Banner nach einem Tor (liegt außerhalb von #view, übersteht Re-Renders)
+  const banner = document.createElement("div");
+  banner.className = "goal-banner";
+  banner.hidden = true;
+  document.body.appendChild(banner);
+  let bannerTimer = null;
+
+  function hideBanner() {
+    clearInterval(bannerTimer);
+    bannerTimer = null;
+    banner.hidden = true;
+    banner.classList.remove("show");
+  }
+
+  function showGoalBanner(ev, res) {
+    const g = res.game;
+    const name = ev.side === "home" ? g.home_name : g.away_name;
+    const color = ev.side === "home" ? g.home_color : g.away_color;
+    const logo = gameLogoUrl(g, ev.side);
+    const secs = undoSeconds();
+    const until = Date.now() + secs * 1000;
+    banner.style.setProperty("--team", color);
+    banner.innerHTML = `
+      <div class="gb-main">
+        ${logo ? `<img src="${esc(logo)}" alt="">` : `<span class="gb-check">✓</span>`}
+        <div class="gb-text">
+          <div class="gb-title">TOR ${esc(name)}</div>
+          <div class="gb-sub">${fmtClock(ev.game_ms)} · Stand <b>${res.score.home}:${res.score.away}</b></div>
+        </div>
+        ${secs > 0 ? `<button class="gb-undo" id="gbUndo">↶ Rückgängig <span id="gbCount">${secs}</span></button>` : ""}
+      </div>
+      <div class="gb-bar"><div class="gb-fill" style="animation-duration:${Math.max(secs, 2)}s"></div></div>`;
+    banner.hidden = false;
+    void banner.offsetWidth;
+    banner.classList.add("show");
+    clearInterval(bannerTimer);
+    const undo = document.getElementById("gbUndo");
+    if (undo) undo.onclick = async () => {
+      undo.disabled = true;
+      try {
+        const r = await api(`/api/events/${ev.id}`, { method: "DELETE" });
+        if (pending === ev.id) pending = null;
+        hideBanner();
+        apply(r);
+        toast(`Tor ${name} zurückgenommen`);
+        if (navigator.vibrate) navigator.vibrate([40, 60, 40]);
+      } catch (e) { undo.disabled = false; toast(e.message, true); }
+    };
+    bannerTimer = setInterval(() => {
+      const left = Math.ceil((until - Date.now()) / 1000);
+      const c = document.getElementById("gbCount");
+      if (c) c.textContent = Math.max(left, 0);
+      if (left <= 0) hideBanner();
+    }, 200);
+    if (secs === 0) setTimeout(hideBanner, 2000);
+  }
+
   const tick = setInterval(renderClock, 200);
   const sync = setInterval(refresh, 30000);
   cleanup = () => {
@@ -304,6 +441,8 @@ async function viewLive(id) {
     if (es) es.close();
     document.removeEventListener("visibilitychange", onVis);
     if (wakeLock) wakeLock.release().catch(() => {});
+    hideBanner();
+    banner.remove();
   };
 
   function renderConn() {
@@ -368,13 +507,13 @@ async function viewLive(id) {
         <div class="live-grid">
           <div style="display:grid;gap:12px">
             <div class="board">
-              <div class="team"><div class="bar" style="background:${esc(g.home_color)}"></div>${esc(g.home_name)}</div>
+              <div class="team">${gameLogoUrl(g, "home") ? `<img class="board-logo" src="${esc(gameLogoUrl(g, "home"))}" alt="">` : ""}<div class="bar" style="background:${esc(g.home_color)}"></div>${esc(g.home_name)}</div>
               <div class="mid">
                 <div class="score">${st.score.home}:${st.score.away}</div>
                 <div class="clock" id="clock">${fmtClock(c.total)}</div>
                 <div class="halfinfo" id="halfinfo"></div>
               </div>
-              <div class="team"><div class="bar" style="background:${esc(g.away_color)}"></div>${esc(g.away_name)}</div>
+              <div class="team">${gameLogoUrl(g, "away") ? `<img class="board-logo" src="${esc(gameLogoUrl(g, "away"))}" alt="">` : ""}<div class="bar" style="background:${esc(g.away_color)}"></div>${esc(g.away_name)}</div>
             </div>
             <div class="goal-buttons">
               ${["home", "away"].map((s) => `
@@ -449,6 +588,8 @@ async function viewLive(id) {
           const res = await api(`/api/games/${id}/goal`, { method: "POST", body: { side, game_ms: t } });
           pending = res.created_event_id;
           apply(res);
+          const ev = res.events.find((e) => e.id === res.created_event_id);
+          if (ev) showGoalBanner(ev, res);
         } catch (e) { toast("Tor NICHT gespeichert: " + e.message, true); }
       };
     });
@@ -629,11 +770,11 @@ async function viewReport(id) {
       <h1 style="margin-bottom:0">Spielbericht</h1>
       <div class="muted">${esc([g.competition, fmtDate(g.game_date), g.venue].filter(Boolean).join(" · "))}</div>
       <div class="board" style="margin-top:14px">
-        <div class="team"><div class="bar" style="background:${esc(g.home_color)}"></div>${esc(g.home_name)}</div>
+        <div class="team">${gameLogoUrl(g, "home") ? `<img class="board-logo big" src="${esc(gameLogoUrl(g, "home"))}" alt="">` : ""}<div class="bar" style="background:${esc(g.home_color)}"></div>${esc(g.home_name)}</div>
         <div class="mid"><div class="report-score">${rep.score.home}:${rep.score.away}</div>
           ${g.halves > 1 ? `<div class="muted small">Halbzeit ${ht.home}:${ht.away}</div>` : ""}
           ${g.status !== "finished" ? `<div class="badge live" style="display:inline-block;margin-top:4px">Spiel läuft noch</div>` : ""}</div>
-        <div class="team"><div class="bar" style="background:${esc(g.away_color)}"></div>${esc(g.away_name)}</div>
+        <div class="team">${gameLogoUrl(g, "away") ? `<img class="board-logo big" src="${esc(gameLogoUrl(g, "away"))}" alt="">` : ""}<div class="bar" style="background:${esc(g.away_color)}"></div>${esc(g.away_name)}</div>
       </div>
     </div>
 

@@ -1,5 +1,6 @@
 """Handball-Tracker: Tore live mitzählen, Spielzeit synchron führen, Spielbericht als PDF."""
 import asyncio
+import base64
 import json
 import re
 from pathlib import Path
@@ -33,6 +34,14 @@ class TeamIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     short: str = Field(default="", max_length=12)
     color: str = Field(default="#1e6fd9", pattern=r"^#[0-9a-fA-F]{6}$")
+
+
+class LogoIn(BaseModel):
+    # PNG/JPEG als Data-URL (wird im Browser bereits verkleinert)
+    data_url: str = Field(max_length=3_000_000)
+
+
+MAX_LOGO_BYTES = 1_500_000
 
 
 class PlayerIn(BaseModel):
@@ -125,6 +134,52 @@ def normalize(g: dict, now: int) -> bool:
     return True
 
 
+def decode_logo(data_url: str) -> bytes:
+    m = re.match(r"^data:image/(png|jpeg);base64,(.+)$", data_url.strip(), re.S)
+    if not m:
+        raise HTTPException(422, "Logo muss PNG oder JPEG sein")
+    try:
+        raw = base64.b64decode(m.group(2), validate=True)
+    except Exception:
+        raise HTTPException(422, "Logo konnte nicht gelesen werden")
+    if len(raw) > MAX_LOGO_BYTES:
+        raise HTTPException(413, "Logo zu groß (max. 1,5 MB)")
+    if not (raw.startswith(b"\x89PNG") or raw.startswith(b"\xff\xd8")):
+        raise HTTPException(422, "Logo muss PNG oder JPEG sein")
+    return raw
+
+
+def logo_mime(raw: bytes) -> str:
+    return "image/png" if raw.startswith(b"\x89PNG") else "image/jpeg"
+
+
+def team_public(t: dict) -> dict:
+    logo = t.pop("logo", None)
+    t["logo_v"] = (len(logo) if logo else 0)
+    return t
+
+
+def game_logo(g: dict, side: str) -> bytes | None:
+    """Logo-Schnappschuss des Spiels, sonst aktuelles Logo der Mannschaft."""
+    raw = g.get(f"{side}_logo")
+    if raw:
+        return raw
+    tid = g.get(f"{side}_team_id")
+    if tid:
+        t = db.one("SELECT logo FROM teams WHERE id=?", (tid,))
+        if t and t["logo"]:
+            return t["logo"]
+    return None
+
+
+def game_public(g: dict) -> dict:
+    for side in SIDES:
+        raw = game_logo(g, side)
+        g.pop(f"{side}_logo", None)
+        g[f"{side}_logo_v"] = len(raw) if raw else 0
+    return g
+
+
 def load_game(game_id: int) -> dict:
     g = db.one("SELECT * FROM games WHERE id=?", (game_id,))
     if not g:
@@ -152,7 +207,7 @@ def game_state(game_id: int) -> dict:
         )
     half_ended = elapsed_in_half(g, now) >= half_len(g)
     return {
-        "game": g,
+        "game": game_public(dict(g)),
         "events": events,
         "score": score,
         "rosters": rosters,
@@ -176,7 +231,7 @@ def game_state(game_id: int) -> dict:
 
 @app.get("/api/teams")
 def list_teams():
-    teams = db.query("SELECT * FROM teams ORDER BY name COLLATE NOCASE")
+    teams = [team_public(t) for t in db.query("SELECT * FROM teams ORDER BY name COLLATE NOCASE")]
     counts = {r["team_id"]: r["n"] for r in db.query("SELECT team_id, COUNT(*) n FROM players GROUP BY team_id")}
     for t in teams:
         t["player_count"] = counts.get(t["id"], 0)
@@ -189,7 +244,7 @@ def create_team(body: TeamIn):
         "INSERT INTO teams(name, short, color, created_at) VALUES (?,?,?,?)",
         (body.name.strip(), body.short.strip(), body.color, db.now_ms()),
     )
-    return db.one("SELECT * FROM teams WHERE id=?", (tid,))
+    return get_team(tid)
 
 
 @app.get("/api/teams/{team_id}")
@@ -197,6 +252,7 @@ def get_team(team_id: int):
     t = db.one("SELECT * FROM teams WHERE id=?", (team_id,))
     if not t:
         raise HTTPException(404, "Mannschaft nicht gefunden")
+    team_public(t)
     t["players"] = db.query(
         "SELECT * FROM players WHERE team_id=? ORDER BY CAST(number AS INTEGER), number, name", (team_id,)
     )
@@ -223,6 +279,39 @@ def delete_team(team_id: int):
         c.execute("DELETE FROM players WHERE team_id=?", (team_id,))
         c.execute("DELETE FROM teams WHERE id=?", (team_id,))
     return {"ok": True}
+
+
+@app.put("/api/teams/{team_id}/logo")
+def set_team_logo(team_id: int, body: LogoIn):
+    get_team(team_id)
+    db.execute("UPDATE teams SET logo=? WHERE id=?", (decode_logo(body.data_url), team_id))
+    return get_team(team_id)
+
+
+@app.delete("/api/teams/{team_id}/logo")
+def delete_team_logo(team_id: int):
+    get_team(team_id)
+    db.execute("UPDATE teams SET logo=NULL WHERE id=?", (team_id,))
+    return get_team(team_id)
+
+
+@app.get("/api/teams/{team_id}/logo")
+def team_logo(team_id: int):
+    t = db.one("SELECT logo FROM teams WHERE id=?", (team_id,))
+    if not t or not t["logo"]:
+        raise HTTPException(404, "Kein Logo")
+    return Response(t["logo"], media_type=logo_mime(t["logo"]), headers={"Cache-Control": "max-age=86400"})
+
+
+@app.get("/api/games/{game_id}/logo/{side}")
+def game_logo_endpoint(game_id: int, side: str):
+    if side not in SIDES:
+        raise HTTPException(404, "Unbekannte Seite")
+    g = db.one("SELECT * FROM games WHERE id=?", (game_id,))
+    raw = game_logo(g, side) if g else None
+    if not raw:
+        raise HTTPException(404, "Kein Logo")
+    return Response(raw, media_type=logo_mime(raw), headers={"Cache-Control": "max-age=86400"})
 
 
 @app.post("/api/teams/{team_id}/players")
@@ -262,6 +351,7 @@ def list_games():
     for r in goals:
         score.setdefault(r["game_id"], {"home": 0, "away": 0})[r["side"]] = r["n"]
     for g in games:
+        game_public(g)
         g["score"] = score.get(g["id"], {"home": 0, "away": 0})
     return games
 
@@ -272,11 +362,17 @@ def create_game(body: GameIn):
         raise HTTPException(422, "Heim- und Gastmannschaft müssen verschieden sein")
     home = get_team(body.home_team_id)
     away = get_team(body.away_team_id)
+    logos = {
+        r["id"]: r["logo"]
+        for r in db.query("SELECT id, logo FROM teams WHERE id IN (?,?)", (home["id"], away["id"]))
+    }
     gid = db.execute(
         "INSERT INTO games(home_team_id, away_team_id, home_name, away_name, home_color, away_color,"
-        " competition, venue, game_date, half_minutes, halves, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        " home_logo, away_logo, competition, venue, game_date, half_minutes, halves, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             home["id"], away["id"], home["name"], away["name"], home["color"], away["color"],
+            logos.get(home["id"]), logos.get(away["id"]),
             body.competition.strip(), body.venue.strip(), body.game_date.strip(),
             body.half_minutes, body.halves, db.now_ms(),
         ),
@@ -501,13 +597,16 @@ async def stream(game_id: int, request: Request):
 @app.get("/api/games/{game_id}/report")
 def report(game_id: int):
     load_game(game_id)
-    return build_report(game_id)
+    rep = build_report(game_id)
+    rep["game"] = game_public(rep["game"])
+    return rep
 
 
 @app.get("/api/games/{game_id}/report.pdf")
 def report_pdf(game_id: int):
     load_game(game_id)
     rep = build_report(game_id)
+    rep["logos"] = {side: game_logo(rep["game"], side) for side in SIDES}
     pdf = render_pdf(rep)
     g = rep["game"]
     base = f"{g['home_name']}_vs_{g['away_name']}"

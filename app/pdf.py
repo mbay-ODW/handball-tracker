@@ -11,7 +11,8 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 GREY = colors.HexColor("#6b7280")
 LIGHT = colors.HexColor("#f3f4f6")
@@ -90,6 +91,18 @@ def _chart(rep: dict, width: float, height: float) -> Drawing:
     return d
 
 
+def _logo(raw: bytes | None, max_w: float, max_h: float):
+    """Logo proportional in eine Box einpassen; None, wenn keins vorhanden/lesbar."""
+    if not raw:
+        return None
+    try:
+        iw, ih = ImageReader(io.BytesIO(raw)).getSize()
+        scale = min(max_w / iw, max_h / ih)
+        return Image(io.BytesIO(raw), width=iw * scale, height=ih * scale)
+    except Exception:
+        return None
+
+
 def _on_page(canvas, doc):
     canvas.saveState()
     canvas.setFont("Helvetica", 7.5)
@@ -122,17 +135,21 @@ def render_pdf(rep: dict) -> bytes:
 
     hc, ac = _hex(g["home_color"]), _hex(g["away_color"])
     ht = rep["cumulative"][0] if rep["cumulative"] else {"home": 0, "away": 0}
-    score_tbl = Table(
-        [
-            [_p(g["home_name"], TEAM), _p(f"{rep['score']['home']} : {rep['score']['away']}", SCORE), _p(g["away_name"], TEAM)],
-            [_p("Heim", SUB), _p(f"Halbzeit {ht['home']} : {ht['away']}" if g["halves"] > 1 else "", SUB), _p("Gast", SUB)],
-        ],
-        colWidths=[W * 0.36, W * 0.28, W * 0.36],
-    )
+    logos = rep.get("logos") or {}
+    home_logo = _logo(logos.get("home"), W * 0.3, 24 * mm)
+    away_logo = _logo(logos.get("away"), W * 0.3, 24 * mm)
+    rows = [
+        [_p(g["home_name"], TEAM), _p(f"{rep['score']['home']} : {rep['score']['away']}", SCORE), _p(g["away_name"], TEAM)],
+        [_p("Heim", SUB), _p(f"Halbzeit {ht['home']} : {ht['away']}" if g["halves"] > 1 else "", SUB), _p("Gast", SUB)],
+    ]
+    if home_logo or away_logo:
+        rows.insert(0, [home_logo or "", "", away_logo or ""])
+    score_tbl = Table(rows, colWidths=[W * 0.36, W * 0.28, W * 0.36])
     score_tbl.setStyle(
         TableStyle(
             [
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("LINEABOVE", (0, 0), (0, 0), 4, hc),
                 ("LINEABOVE", (2, 0), (2, 0), 4, ac),
                 ("TOPPADDING", (0, 0), (-1, 0), 8),

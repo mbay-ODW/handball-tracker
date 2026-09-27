@@ -77,8 +77,22 @@ def conn() -> sqlite3.Connection:
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA foreign_keys=ON")
         c.executescript(SCHEMA)
+        _migrate(c)
         _conn = c
     return _conn
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    """Spalten nachrüsten, die in älteren Datenbanken fehlen."""
+    wanted = {
+        "teams": [("logo", "BLOB")],
+        "games": [("home_logo", "BLOB"), ("away_logo", "BLOB")],
+    }
+    for table, cols in wanted.items():
+        have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+        for name, typ in cols:
+            if name not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
 
 def query(sql: str, params: tuple = ()) -> list[dict]:

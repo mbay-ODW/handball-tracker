@@ -167,3 +167,43 @@ dialog h3 { margin: 0 0 12px; }
 .adjust { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
 .big-input { font-size: 32px; text-align: center; font-variant-numeric: tabular-nums; }
 .empty { text-align: center; padding: 30px 10px; color: var(--muted); }
+
+/* ---------------- Logos ---------------- */
+.logo-thumb { width: 36px; height: 36px; object-fit: contain; border-radius: 6px; background: #fff; padding: 2px; flex: none; }
+.logo-pair { display: flex; gap: 4px; flex: none; }
+.logo-pair .logo-thumb, .logo-pair .swatch { width: 28px; height: 28px; }
+.logo-preview { width: 110px; height: 110px; object-fit: contain; background: #fff; border-radius: 12px; padding: 6px; }
+.empty-logo { display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 13px; background: var(--panel-2); }
+.board-logo { display: block; margin: 0 auto 6px; height: clamp(28px, 7vw, 56px); max-width: 90%; object-fit: contain; }
+.board-logo.big { height: clamp(40px, 10vw, 80px); }
+
+/* ---------------- Tor-Bestätigung ---------------- */
+.goal-banner {
+  position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 10px); z-index: 60;
+  width: min(640px, calc(100vw - 20px)); transform: translate(-50%, -140%);
+  background: var(--team, #1e6fd9); color: #fff; border-radius: 18px; overflow: hidden;
+  box-shadow: 0 14px 40px rgba(0,0,0,.55), 0 0 0 3px rgba(255,255,255,.85);
+  transition: transform .25s cubic-bezier(.2,.9,.3,1.2);
+}
+.goal-banner.show { transform: translate(-50%, 0); }
+.gb-main { display: flex; align-items: center; gap: 12px; padding: 14px 14px 12px; text-shadow: 0 1px 2px rgba(0,0,0,.45); }
+.gb-main img { width: 52px; height: 52px; object-fit: contain; background: #fff; border-radius: 10px; padding: 3px; flex: none; }
+.gb-check { width: 52px; height: 52px; border-radius: 50%; background: rgba(255,255,255,.95); color: #16a34a; font-size: 34px; font-weight: 900; display: flex; align-items: center; justify-content: center; flex: none; text-shadow: none; }
+.gb-text { flex: 1; min-width: 0; }
+.gb-title { font-size: clamp(20px, 5.5vw, 30px); font-weight: 900; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gb-sub { font-size: 16px; opacity: .95; font-variant-numeric: tabular-nums; }
+.gb-undo {
+  flex: none; min-height: 56px; padding: 0 16px; border-radius: 12px; border: 2px solid #fff;
+  background: rgba(0,0,0,.35); color: #fff; font-weight: 800; font-size: 17px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.gb-undo:active { background: rgba(0,0,0,.55); }
+.gb-undo span { display: inline-block; min-width: 1.4em; padding: 1px 6px; margin-left: 4px; border-radius: 99px; background: #fff; color: #111827; }
+.gb-bar { height: 6px; background: rgba(0,0,0,.3); }
+.gb-fill { height: 100%; background: #fff; transform-origin: left; animation: gbshrink linear forwards; }
+@keyframes gbshrink { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (max-width: 560px) {
+  .gb-main { flex-wrap: wrap; }
+  .gb-title { white-space: normal; }
+  .gb-undo { flex: 1 1 100%; min-height: 54px; font-size: 18px; }
+  .gb-main img, .gb-check { width: 46px; height: 46px; }
+}
