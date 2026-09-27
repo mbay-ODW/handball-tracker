@@ -93,6 +93,63 @@ function lum(hex) {
 }
 const ink = (hex) => (lum(hex) > 0.45 ? "#111827" : "#ffffff");
 
+// ---------------------------------------------------------------- Rückmeldung (Haptik/Ton)
+// Android: navigator.vibrate. iOS-Safari kennt keine Vibration-API, löst aber ab iOS 18 beim Umschalten
+// eines <input type="checkbox" switch> ein haptisches Feedback aus – das nutzen wir unsichtbar.
+const SOUND_KEY = "handball.sound";
+const HAPTIC_KEY = "handball.haptic";
+const pref = (k, def) => { try { const v = localStorage.getItem(k); return v === null ? def : v === "1"; } catch (_) { return def; } };
+const setPref = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch (_) {} };
+
+let hapticLabel = null;
+function iosTick() {
+  if (!hapticLabel) {
+    hapticLabel = document.createElement("label");
+    hapticLabel.setAttribute("aria-hidden", "true");
+    hapticLabel.style.cssText = "position:fixed;left:-100px;top:0;width:1px;height:1px;overflow:hidden;opacity:0";
+    const sw = document.createElement("input");
+    sw.type = "checkbox";
+    sw.setAttribute("switch", "");
+    sw.tabIndex = -1;
+    hapticLabel.appendChild(sw);
+    document.body.appendChild(hapticLabel);
+  }
+  hapticLabel.click();
+}
+
+// pattern: "tap" (Tor gebucht), "ok" (gespeichert/zurückgenommen), "error"
+function haptic(pattern = "tap") {
+  if (!pref(HAPTIC_KEY, true)) return;
+  if (navigator.vibrate) {
+    navigator.vibrate({ tap: 80, ok: [40, 60, 40], error: [200, 100, 200, 100, 200] }[pattern] || 80);
+    return;
+  }
+  const n = { tap: 1, ok: 2, error: 3 }[pattern] || 1;
+  iosTick(); // erster Impuls synchron innerhalb der Nutzeraktion
+  for (let i = 1; i < n; i++) setTimeout(iosTick, i * 140);
+}
+
+let audioCtx = null;
+function beep(pattern = "tap") {
+  if (!pref(SOUND_KEY, false)) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    const tones = { tap: [[880, 0, 0.12]], ok: [[660, 0, 0.08], [990, 0.1, 0.1]], error: [[220, 0, 0.25], [220, 0.3, 0.25]] }[pattern];
+    for (const [f, at, dur] of tones) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = "square"; o.frequency.value = f;
+      const t0 = audioCtx.currentTime + at;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.25, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t0); o.stop(t0 + dur + 0.02);
+    }
+  } catch (_) {}
+}
+const feedback = (p) => { haptic(p); beep(p); };
+
 const teamLogoUrl = (t) => (t.logo_v ? `/api/teams/${t.id}/logo?v=${t.logo_v}` : null);
 const gameLogoUrl = (g, side) => (g[`${side}_logo_v`] ? `/api/games/${g.id}/logo/${side}?v=${g[`${side}_logo_v`]}` : null);
 const teamBadge = (url, color, cls = "swatch") =>
@@ -174,7 +231,17 @@ async function viewGames() {
         <input id="undoSec" type="number" min="0" max="60" inputmode="numeric" value="${undoSeconds()}">
       </label>
       <span class="muted small" style="flex:2;min-width:200px">Nach jedem Tor erscheint eine Bestätigung mit „Rückgängig“-Knopf. 0 = nur Bestätigung ohne Rückgängig.</span>
+    </div>
+    <div class="card" style="margin-top:10px;display:grid;gap:12px">
+      <label class="toggle"><input type="checkbox" id="prefHaptic" ${pref(HAPTIC_KEY, true) ? "checked" : ""}> Vibration beim Tor
+        <span class="muted small">iPhone: kurzes Antippen spürbar (ab iOS 18, Safari; „Systemhaptik“ in den iOS-Einstellungen muss an sein).</span></label>
+      <label class="toggle"><input type="checkbox" id="prefSound" ${pref(SOUND_KEY, false) ? "checked" : ""}> Piepton beim Tor
+        <span class="muted small">Nicht hörbar, wenn das iPhone auf lautlos steht.</span></label>
+      <button class="btn" id="testFeedback">Rückmeldung testen</button>
     </div>`;
+  document.getElementById("prefHaptic").onchange = (ev) => setPref(HAPTIC_KEY, ev.target.checked);
+  document.getElementById("prefSound").onchange = (ev) => setPref(SOUND_KEY, ev.target.checked);
+  document.getElementById("testFeedback").onclick = () => feedback("tap");
   document.getElementById("undoSec").onchange = (ev) => {
     const v = Math.max(0, Math.min(60, parseInt(ev.target.value, 10) || 0));
     ev.target.value = v;
@@ -460,6 +527,7 @@ async function viewLive(id) {
       if (lastErr) {
         undo.disabled = false;
         undo.innerHTML = "↶ Nochmal versuchen";
+        feedback("error");
         toast("Zurücknehmen fehlgeschlagen: " + lastErr.message + " – Tor ist noch gezählt", true);
         return;
       }
@@ -467,7 +535,7 @@ async function viewLive(id) {
       hideBanner();
       render();
       toast(`Tor ${name} zurückgenommen`);
-      if (navigator.vibrate) navigator.vibrate([40, 60, 40]);
+      feedback("ok");
     };
     bannerTimer = setInterval(() => {
       const left = Math.ceil((until - Date.now()) / 1000);
@@ -629,14 +697,14 @@ async function viewLive(id) {
         lastTap[side] = now;
         const t = clockMs(st).total;
         b.classList.remove("flash"); void b.offsetWidth; b.classList.add("flash");
-        if (navigator.vibrate) navigator.vibrate(60);
+        feedback("tap");
         try {
           const res = await api(`/api/games/${id}/goal`, { method: "POST", body: { side, game_ms: t } });
           pending = res.created_event_id;
           apply(res);
           const ev = res.events.find((e) => e.id === res.created_event_id);
           if (ev) showGoalBanner(ev, res);
-        } catch (e) { toast("Tor NICHT gespeichert: " + e.message, true); }
+        } catch (e) { feedback("error"); toast("Tor NICHT gespeichert: " + e.message, true); }
       };
     });
     const sb = document.getElementById("startBtn");
