@@ -1,0 +1,31 @@
+services:
+  handball:
+    image: handball-tracker:latest
+    container_name: handball-tracker
+    hostname: handball-tracker
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - TZ=Europe/Berlin
+      - DATA_DIR=/data
+    volumes:
+      - /mnt/apps/handball-tracker/data:/data:rw
+    networks:
+      - default
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik
+      - traefik.http.routers.handball.rule=Host(`handball.bay-ram.de`)
+      - traefik.http.routers.handball.entrypoints=websecure
+      - traefik.http.routers.handball.tls=true
+      - traefik.http.routers.handball.tls.certresolver=mydnschallenge
+      - traefik.http.routers.handball.middlewares=middlewares-rate-limit@file,middlewares-authelia@file,middlewares-secure-headers@file
+      - traefik.http.services.handball.loadbalancer.server.port=8000
+
+networks:
+  default:
+    driver: bridge
+  traefik:
+    external: true

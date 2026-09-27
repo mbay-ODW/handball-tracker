@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Handball-Tracker</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/style.css?v=1">
+</head>
+<body>
+  <header class="topbar">
+    <a href="#/" class="brand"><img src="/static/icon.svg" alt=""> Handball-Tracker</a>
+    <nav>
+      <a href="#/">Spiele</a>
+      <a href="#/teams">Mannschaften</a>
+    </nav>
+  </header>
+  <main id="view"></main>
+  <div id="toast" class="toast" hidden></div>
+  <dialog id="dialog"></dialog>
+  <script src="/static/app.js?v=1"></script>
+</body>
+</html>
